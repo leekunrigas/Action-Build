@@ -999,6 +999,22 @@ jobs:
             fi
           fi
 
+          # Stub SELinux hide symbols for SUSFS v2.1.0+ selinuxfs.c hook.
+          # SUSFS patches selinuxfs.c to reference ksu_selinux_hide_enabled,
+          # fake_status, initialize_fake_status, and fake_status_initialize_key.
+          # These must be exported by the KernelSU driver. If the current
+          # SukiSU-Ultra build doesn't define them the linker fails at vmlinux
+          # link time. Add a stub file so the build always links cleanly.
+          if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
+            KSU_DIR="./drivers/kernelsu"
+            if [ -d "$KSU_DIR" ] && ! grep -rq "EXPORT.*ksu_selinux_hide_enabled" "$KSU_DIR/" 2>/dev/null; then
+              echo "Adding SELinux hide stubs for SUSFS v2.1.0+ compatibility..."
+              printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n\nbool ksu_selinux_hide_enabled = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_enabled);\nDEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);\nEXPORT_SYMBOL_GPL(fake_status_initialize_key);\nstruct page *fake_status;\nEXPORT_SYMBOL_GPL(fake_status);\nvoid initialize_fake_status(void) {}\nEXPORT_SYMBOL_GPL(initialize_fake_status);\n' > "$KSU_DIR/selinux_fake_status.c"
+              echo 'obj-$(CONFIG_KSU) += selinux_fake_status.o' >> "$KSU_DIR/Makefile"
+              echo "Done."
+            fi
+          fi
+
           source $REJ_CHECKER
           check_rejects .
 
@@ -1218,7 +1234,6 @@ jobs:
             set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-            set_config "CONFIG_KSU_SELINUX_HIDE=y"
           else
             set_config "CONFIG_KSU_SUSFS=n"
           fi
