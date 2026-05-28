@@ -1218,7 +1218,6 @@ jobs:
             set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-            set_config "CONFIG_KSU_SELINUX_HIDE=y"
           else
             set_config "CONFIG_KSU_SUSFS=n"
           fi
