@@ -1847,8 +1847,22 @@ jobs:
 
           if [[ -z "$artifact_url" ]]; then
             echo "No artifact '$MANAGER_ARTIFACT' found in run $run_id, falling back to latest release APK."
-            release_apk_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest" \
-              --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1 || echo "")
+            # Select the APK that matches the spoofed/non-spoofed variant.
+            if [[ "$MANAGER_ARTIFACT" == *"Spoof"* ]]; then
+              release_apk_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest" \
+                --jq '.assets[] | select((.name | ascii_downcase | test("spoof")) and (.name | endswith(".apk"))) | .browser_download_url' \
+                | head -n1 || echo "")
+            else
+              release_apk_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest" \
+                --jq '.assets[] | select((.name | ascii_downcase | test("spoof") | not) and (.name | endswith(".apk"))) | .browser_download_url' \
+                | head -n1 || echo "")
+            fi
+            # Final fallback: any APK in the release
+            if [[ -z "$release_apk_url" ]]; then
+              release_apk_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest" \
+                --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' \
+                | head -n1 || echo "")
+            fi
             if [[ -z "$release_apk_url" ]]; then
               echo "No release APK found either. Skipping."
               exit 0
