@@ -1846,7 +1846,15 @@ jobs:
           artifact_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | jq -r ".artifacts[] | select(.name == \"$MANAGER_ARTIFACT\") | .archive_download_url" | head -n1)
 
           if [[ -z "$artifact_url" ]]; then
-            echo "No artifact '$MANAGER_ARTIFACT' found in run $run_id. Skipping download."
+            echo "No artifact '$MANAGER_ARTIFACT' found in run $run_id, falling back to latest release APK."
+            release_apk_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest" \
+              --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1 || echo "")
+            if [[ -z "$release_apk_url" ]]; then
+              echo "No release APK found either. Skipping."
+              exit 0
+            fi
+            echo "Downloading release APK from: $release_apk_url"
+            curl -fL "$release_apk_url" -o ./AnyKernel3/SukiSU-Ultra.apk
             exit 0
           fi
           echo "Downloading from: $artifact_url"
