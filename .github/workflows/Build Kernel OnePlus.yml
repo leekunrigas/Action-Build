@@ -1124,13 +1124,15 @@ jobs:
                 for s in $_STUB_SYMS; do
                   case "$s" in
                     ksu_selinux_hide_running|ksu_selinux_hide_enabled)
-                      printf 'bool %s = false;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                      printf 'bool __weak %s = false;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
                     fake_state|fake_status)
-                      printf 'struct page *%s;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                      printf 'struct page * __weak %s;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
                     initialize_fake_status)
-                      printf 'void %s(void) {}\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                      printf 'void __weak %s(void) {}\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                    ksu_is_init_rc_hook_enabled|ksu_is_input_hook_enabled)
+                      printf 'bool __weak %s(void) { return false; }\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
                     *)
-                      printf 'DEFINE_STATIC_KEY_FALSE(%s);\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                      printf 'struct static_key_false __weak %s = STATIC_KEY_FALSE_INIT;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
                   esac
                 done
                 KB="$KSU_DIR/Kbuild"
