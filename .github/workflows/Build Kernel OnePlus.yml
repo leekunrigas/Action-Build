@@ -1020,20 +1020,30 @@ jobs:
                 local sym="$1"
                 # Skip if already exported anywhere in the KSU tree
                 grep -rq "EXPORT_SYMBOL.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null && return 0
-                # Find the file with the static definition.
-                # Negative lookahead (?!\() excludes function definitions like
-                # 'static void sym(...)' so we only match variable/key definitions.
-                local f
-                f=$(grep -rlP "^static\s.*\b${sym}\b(?!\()" "$KSU_DIR/" 2>/dev/null \
+                # Search for static definition first (needs de-static before export)
+                local f is_static
+                f=$(grep -rlP "^static\s.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null \
                     | grep '\.c$' | grep -v ksu_stubs | head -1)
                 if [ -n "$f" ]; then
-                  echo "  [real] $sym → $(basename "$f")"
-                  sed -i \
-                    -e "s/^static DEFINE_STATIC_KEY_FALSE(${sym})/DEFINE_STATIC_KEY_FALSE(${sym})/" \
-                    -e "s/^static bool ${sym}/bool ${sym}/" \
-                    -e "s/^static struct page \*${sym}/struct page *${sym}/" \
-                    -e "s/^static void ${sym}(/void ${sym}(/" \
-                    "$f"
+                  is_static=1
+                else
+                  # Symbol is not static — search for global (non-static) definition.
+                  # This covers variables/keys already defined without 'static' in ksu.c.
+                  f=$(grep -rlP "^(?:bool|void|struct\s+page\s*\*|DEFINE_STATIC_KEY_FALSE\()\s*[*]?\s*\b${sym}\b" \
+                        "$KSU_DIR/" 2>/dev/null \
+                      | grep '\.c$' | grep -v ksu_stubs | head -1)
+                  is_static=0
+                fi
+                if [ -n "$f" ]; then
+                  echo "  [real] $sym → $(basename "$f") (static=$is_static)"
+                  if [ "$is_static" = "1" ]; then
+                    sed -i \
+                      -e "s/^static DEFINE_STATIC_KEY_FALSE(${sym})/DEFINE_STATIC_KEY_FALSE(${sym})/" \
+                      -e "s/^static bool ${sym}/bool ${sym}/" \
+                      -e "s/^static struct page \*${sym}/struct page *${sym}/" \
+                      -e "s/^static void ${sym}(/void ${sym}(/" \
+                      "$f"
+                  fi
                   grep -q "EXPORT_SYMBOL_GPL(${sym})" "$f" || \
                     printf '\nEXPORT_SYMBOL_GPL(%s);\n' "${sym}" >> "$f"
                   # Ensure the file is compiled in-tree.
