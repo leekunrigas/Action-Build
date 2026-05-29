@@ -1050,14 +1050,39 @@ jobs:
                     is_static=1; is_header=1
                   fi
                 fi
+                # Broader fallback: same type patterns without strict BOL anchor
+                # — catches definitions indented under #ifdef / conditional blocks.
+                if [ -z "$f" ]; then
+                  f=$(grep -rlP "^\s+(?:static\s+)?(?:bool|void|struct\s+page\s*\*|DEFINE_STATIC_KEY_(?:FALSE|TRUE)\()\s*[*]?\s*\b${sym}\b" \
+                        "$KSU_DIR/" 2>/dev/null \
+                      | grep -E '\.(c|h)$' | grep -v ksu_stubs | head -1)
+                  if [ -n "$f" ]; then
+                    grep -qP "^\s+static\s+.*\b${sym}\b" "$f" && is_static=1 || is_static=0
+                    is_header=0; [[ "$f" == *.h ]] && is_header=1
+                    echo "  [indented] $sym → $(basename "$f")"
+                  fi
+                fi
+                # Broadest fallback: any DEFINE_*/DECLARE_* macro with the symbol
+                # as its first argument — covers custom KSU macros that expand to
+                # the real DEFINE_STATIC_KEY_FALSE / bool / struct page* definition.
+                if [ -z "$f" ]; then
+                  f=$(grep -rlP "(?:DEFINE|DECLARE)_\w+\(\s*\b${sym}\b" \
+                        "$KSU_DIR/" 2>/dev/null \
+                      | grep -E '\.(c|h)$' | grep -v ksu_stubs | head -1)
+                  if [ -n "$f" ]; then
+                    is_static=0; is_header=0
+                    [[ "$f" == *.h ]] && is_header=1
+                    echo "  [define-macro] $sym → $(basename "$f")"
+                  fi
+                fi
                 if [ -n "$f" ]; then
                   echo "  [real] $sym → $(basename "$f") (static=$is_static header=$is_header)"
                   if [ "$is_static" = "1" ] && [ "$is_header" = "0" ]; then
                     sed -i \
-                      -e "s/^static DEFINE_STATIC_KEY_FALSE(${sym})/DEFINE_STATIC_KEY_FALSE(${sym})/" \
-                      -e "s/^static bool ${sym}/bool ${sym}/" \
-                      -e "s/^static struct page \*${sym}/struct page *${sym}/" \
-                      -e "s/^static void ${sym}(/void ${sym}(/" \
+                      -e "s/^\(\s*\)static DEFINE_STATIC_KEY_FALSE(${sym})/\1DEFINE_STATIC_KEY_FALSE(${sym})/" \
+                      -e "s/^\(\s*\)static bool ${sym}/\1bool ${sym}/" \
+                      -e "s/^\(\s*\)static struct page \*${sym}/\1struct page *${sym}/" \
+                      -e "s/^\(\s*\)static void ${sym}(/\1void ${sym}(/" \
                       "$f"
                   fi
                   if [ "$is_header" = "1" ]; then
@@ -1120,7 +1145,8 @@ jobs:
 
               if [ -n "$_STUB_SYMS" ]; then
                 SF="$KSU_DIR/ksu_stubs.c"
-                printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n' > "$SF"
+                printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n#include <linux/init.h>\n' > "$SF"
+                _STUBBED_KEYS=""
                 for s in $_STUB_SYMS; do
                   case "$s" in
                     ksu_selinux_hide_running|ksu_selinux_hide_enabled)
@@ -1132,9 +1158,19 @@ jobs:
                     ksu_is_init_rc_hook_enabled|ksu_is_input_hook_enabled)
                       printf 'bool __weak %s(void) { return false; }\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
                     *)
-                      printf 'struct static_key_false __weak %s = STATIC_KEY_FALSE_INIT;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                      printf 'struct static_key_false __weak %s = STATIC_KEY_FALSE_INIT;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF"
+                      _STUBBED_KEYS="$_STUBBED_KEYS $s";;
                   esac
                 done
+                # Enable stubbed hook keys at boot so the builtin build
+                # behaves like the LKM build after module_init runs.
+                if [ -n "$_STUBBED_KEYS" ]; then
+                  printf '\nstatic int __init ksu_stubs_enable_keys(void) {\n' >> "$SF"
+                  for s in $_STUBBED_KEYS; do
+                    printf '\tstatic_branch_enable(&%s);\n' "$s" >> "$SF"
+                  done
+                  printf '\treturn 0;\n}\nearly_initcall(ksu_stubs_enable_keys);\n' >> "$SF"
+                fi
                 KB="$KSU_DIR/Kbuild"
                 [ -f "$KB" ] || KB="$KSU_DIR/Makefile"
                 echo 'obj-$(CONFIG_KSU) += ksu_stubs.o' >> "$KB"
