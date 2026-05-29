@@ -1031,9 +1031,9 @@ jobs:
                 printf 'obj-$(CONFIG_KSU) += selinux_hide.o\n' >> "$FEAT_BUILD"
               fi
               echo "Done."
-            elif [ -d "$KSU_DIR" ] && ! grep -rq "EXPORT.*ksu_selinux_hide_enabled" "$KSU_DIR/" 2>/dev/null; then
-              echo "selinux_hide.c not found; injecting stubs as fallback..."
-              printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n\nbool ksu_selinux_hide_enabled = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_enabled);\nDEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);\nEXPORT_SYMBOL_GPL(fake_status_initialize_key);\nstruct page *fake_status;\nEXPORT_SYMBOL_GPL(fake_status);\nvoid initialize_fake_status(void) {}\nEXPORT_SYMBOL_GPL(initialize_fake_status);\n' > "$KSU_DIR/selinux_fake_status.c"
+            elif [ -d "$KSU_DIR" ] && ! grep -rq "ksu_selinux_hide_enabled\|ksu_selinux_hide_running\|ksu_init_rc_hook_key_false" "$KSU_DIR/" 2>/dev/null; then
+              echo "selinux_hide.c not found; injecting stubs for v3.x and v4.x API..."
+              printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n\nbool ksu_selinux_hide_enabled = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_enabled);\nDEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);\nEXPORT_SYMBOL_GPL(fake_status_initialize_key);\nstruct page *fake_status;\nEXPORT_SYMBOL_GPL(fake_status);\nvoid initialize_fake_status(void) {}\nEXPORT_SYMBOL_GPL(initialize_fake_status);\nbool ksu_selinux_hide_running = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_running);\nstruct page *fake_state;\nEXPORT_SYMBOL_GPL(fake_state);\nDEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);\nEXPORT_SYMBOL_GPL(ksu_is_init_rc_hook_enabled);\nDEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);\nEXPORT_SYMBOL_GPL(ksu_is_input_hook_enabled);\nDEFINE_STATIC_KEY_FALSE(ksu_init_rc_hook_key_false);\nEXPORT_SYMBOL_GPL(ksu_init_rc_hook_key_false);\nDEFINE_STATIC_KEY_FALSE(ksu_input_hook_key_false);\nEXPORT_SYMBOL_GPL(ksu_input_hook_key_false);\n' > "$KSU_DIR/selinux_fake_status.c"
               KBUILD_FILE="$KSU_DIR/Kbuild"
               [ -f "$KBUILD_FILE" ] || KBUILD_FILE="$KSU_DIR/Makefile"
               echo 'obj-$(CONFIG_KSU) += selinux_fake_status.o' >> "$KBUILD_FILE"
