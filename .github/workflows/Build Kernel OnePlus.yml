@@ -1021,22 +1021,38 @@ jobs:
                 # Skip if already exported anywhere in the KSU tree
                 grep -rq "EXPORT_SYMBOL.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null && return 0
                 # Search for static definition first (needs de-static before export)
-                local f is_static
+                local f is_static is_header
+                is_header=0
                 f=$(grep -rlP "^static\s.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null \
                     | grep '\.c$' | grep -v ksu_stubs | head -1)
                 if [ -n "$f" ]; then
                   is_static=1
                 else
                   # Symbol is not static — search for global (non-static) definition.
-                  # This covers variables/keys already defined without 'static' in ksu.c.
+                  # Search .c files first; fall back to .h files (headers #included into
+                  # ksu.c are compiled into ksu.o and must not get duplicate stubs).
                   f=$(grep -rlP "^(?:bool|void|struct\s+page\s*\*|DEFINE_STATIC_KEY_FALSE\()\s*[*]?\s*\b${sym}\b" \
                         "$KSU_DIR/" 2>/dev/null \
                       | grep '\.c$' | grep -v ksu_stubs | head -1)
+                  if [ -z "$f" ]; then
+                    f=$(grep -rlP "^(?:bool|void|struct\s+page\s*\*|DEFINE_STATIC_KEY_FALSE\()\s*[*]?\s*\b${sym}\b" \
+                          "$KSU_DIR/" 2>/dev/null \
+                        | grep '\.h$' | grep -v ksu_stubs | head -1)
+                    [ -n "$f" ] && is_header=1
+                  fi
                   is_static=0
                 fi
+                # Also check .h files for static definitions (edge case)
+                if [ -z "$f" ]; then
+                  f=$(grep -rlP "^static\s.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null \
+                      | grep '\.h$' | head -1)
+                  if [ -n "$f" ]; then
+                    is_static=1; is_header=1
+                  fi
+                fi
                 if [ -n "$f" ]; then
-                  echo "  [real] $sym → $(basename "$f") (static=$is_static)"
-                  if [ "$is_static" = "1" ]; then
+                  echo "  [real] $sym → $(basename "$f") (static=$is_static header=$is_header)"
+                  if [ "$is_static" = "1" ] && [ "$is_header" = "0" ]; then
                     sed -i \
                       -e "s/^static DEFINE_STATIC_KEY_FALSE(${sym})/DEFINE_STATIC_KEY_FALSE(${sym})/" \
                       -e "s/^static bool ${sym}/bool ${sym}/" \
@@ -1044,35 +1060,43 @@ jobs:
                       -e "s/^static void ${sym}(/void ${sym}(/" \
                       "$f"
                   fi
-                  grep -q "EXPORT_SYMBOL_GPL(${sym})" "$f" || \
-                    printf '\nEXPORT_SYMBOL_GPL(%s);\n' "${sym}" >> "$f"
-                  # Ensure the file is compiled in-tree.
-                  # If ksu.c already #includes the file the symbol is already
-                  # compiled as part of ksu.o — no Kbuild change needed.
-                  local fname fdir obj kb pkb subdir
-                  fname="$(basename "$f")"
-                  fdir="$(dirname "$f")"
-                  obj="${fname%.c}.o"
-                  if ! grep -qE "#include[[:space:]]*[\"<][^\"<>]*${fname}[>\"']" \
-                       "$KSU_DIR/ksu.c" 2>/dev/null; then
-                    kb="$fdir/Kbuild"
-                    [ -f "$kb" ] || kb="$fdir/Makefile"
-                    if [ -f "$kb" ]; then
-                      grep -q "$obj" "$kb" 2>/dev/null || echo "obj-\$(CONFIG_KSU) += $obj" >> "$kb"
-                    else
-                      echo "obj-\$(CONFIG_KSU) += $obj" > "$kb"
-                    fi
-                    if [ "$fdir" != "$KSU_DIR" ]; then
-                      subdir="$(basename "$fdir")"
-                      pkb="$KSU_DIR/Kbuild"
-                      [ -f "$pkb" ] || pkb="$KSU_DIR/Makefile"
-                      case "$_DONE_DIRS" in *" $subdir "*);;
-                        *)
-                          grep -q "obj-.*${subdir}/" "$pkb" 2>/dev/null || \
-                            printf 'ifndef KBUILD_EXTMOD\nobj-$(CONFIG_KSU) += %s/\nendif\n' \
-                              "$subdir" >> "$pkb"
-                          _DONE_DIRS="$_DONE_DIRS$subdir ";;
-                      esac
+                  if [ "$is_header" = "1" ]; then
+                    # Symbol defined in a header that ksu.c #includes → already part of
+                    # ksu.o. Export from ksu.c to avoid polluting the header and causing
+                    # duplicate export entries if the header is included elsewhere.
+                    grep -q "EXPORT_SYMBOL_GPL(${sym})" "$KSU_DIR/ksu.c" || \
+                      printf '\nEXPORT_SYMBOL_GPL(%s);\n' "${sym}" >> "$KSU_DIR/ksu.c"
+                  else
+                    grep -q "EXPORT_SYMBOL_GPL(${sym})" "$f" || \
+                      printf '\nEXPORT_SYMBOL_GPL(%s);\n' "${sym}" >> "$f"
+                    # Ensure the file is compiled in-tree.
+                    # If ksu.c already #includes the file the symbol is already
+                    # compiled as part of ksu.o — no Kbuild change needed.
+                    local fname fdir obj kb pkb subdir
+                    fname="$(basename "$f")"
+                    fdir="$(dirname "$f")"
+                    obj="${fname%.c}.o"
+                    if ! grep -qE "#include[[:space:]]*[\"<][^\"<>]*${fname}[>\"']" \
+                         "$KSU_DIR/ksu.c" 2>/dev/null; then
+                      kb="$fdir/Kbuild"
+                      [ -f "$kb" ] || kb="$fdir/Makefile"
+                      if [ -f "$kb" ]; then
+                        grep -q "$obj" "$kb" 2>/dev/null || echo "obj-\$(CONFIG_KSU) += $obj" >> "$kb"
+                      else
+                        echo "obj-\$(CONFIG_KSU) += $obj" > "$kb"
+                      fi
+                      if [ "$fdir" != "$KSU_DIR" ]; then
+                        subdir="$(basename "$fdir")"
+                        pkb="$KSU_DIR/Kbuild"
+                        [ -f "$pkb" ] || pkb="$KSU_DIR/Makefile"
+                        case "$_DONE_DIRS" in *" $subdir "*);;
+                          *)
+                            grep -q "obj-.*${subdir}/" "$pkb" 2>/dev/null || \
+                              printf 'ifndef KBUILD_EXTMOD\nobj-$(CONFIG_KSU) += %s/\nendif\n' \
+                                "$subdir" >> "$pkb"
+                            _DONE_DIRS="$_DONE_DIRS$subdir ";;
+                        esac
+                      fi
                     fi
                   fi
                 else
