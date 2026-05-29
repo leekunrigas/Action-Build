@@ -999,44 +999,110 @@ jobs:
             fi
           fi
 
-          # Fix SELinux hide symbols for SUSFS v2.1.0+ selinuxfs.c hook.
-          # feature/selinux_hide.c in SukiSU-Ultra defines the four symbols as
-          # 'static' (file-local). SUSFS patches selinuxfs.c to reference them
-          # as external symbols. The Kbuild 'kernelsu-objs' compiles this file
-          # only for out-of-tree module builds (KBUILD_EXTMOD); for in-tree GKI
-          # builds only ksu.o is compiled. Fix: remove 'static' from the four
-          # symbols and add the file to the in-tree build via a guarded descent.
-          # Falls back to injecting no-op stubs if selinux_hide.c is absent.
+          # Fix KSU feature symbol visibility for SUSFS v2.1.0+ in-tree GKI builds.
+          # v4.x SukiSU-Ultra (builtin branch) compiles only ksu.o in-tree, but
+          # its ksud.c and SUSFS-patched selinux files reference symbols from feature
+          # files that are only compiled for out-of-tree (KBUILD_EXTMOD) builds.
+          #
+          # Strategy: search the entire drivers/kernelsu/ tree for each expected
+          # symbol defined as 'static'. Remove 'static', add EXPORT_SYMBOL_GPL, and
+          # ensure the containing file is compiled in-tree. Falls back to no-op stubs
+          # only for any symbol whose definition cannot be found in the source at all.
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             KSU_DIR="./drivers/kernelsu"
-            SELINUX_HIDE="$KSU_DIR/feature/selinux_hide.c"
-            if [ -f "$SELINUX_HIDE" ] && ! grep -q "^bool ksu_selinux_hide_enabled" "$SELINUX_HIDE"; then
-              echo "Exposing selinux_hide symbols for in-tree GKI build..."
-              sed -i \
-                -e 's/^static DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/' \
-                -e 's/^static struct page \*fake_status/struct page *fake_status/' \
-                -e 's/^static void initialize_fake_status/void initialize_fake_status/' \
-                -e 's/^static bool ksu_selinux_hide_enabled/bool ksu_selinux_hide_enabled/' \
-                "$SELINUX_HIDE"
-              KBUILD_FILE="$KSU_DIR/Kbuild"
-              [ -f "$KBUILD_FILE" ] || KBUILD_FILE="$KSU_DIR/Makefile"
-              if ! grep -q "obj-.*feature/" "$KBUILD_FILE"; then
-                printf 'ifndef KBUILD_EXTMOD\nobj-$(CONFIG_KSU) += feature/\nendif\n' >> "$KBUILD_FILE"
+            if [ -d "$KSU_DIR" ] && \
+               ! grep -rq "EXPORT_SYMBOL.*ksu_selinux_hide_running\|EXPORT_SYMBOL.*ksu_selinux_hide_enabled" "$KSU_DIR/" 2>/dev/null; then
+              echo "Fixing KSU feature symbols for in-tree GKI build..."
+              _STUB_SYMS=""
+              _DONE_DIRS=" "
+
+              expose_ksu_sym() {
+                local sym="$1"
+                # Skip if already exported anywhere in the KSU tree
+                grep -rq "EXPORT_SYMBOL.*\b${sym}\b" "$KSU_DIR/" 2>/dev/null && return 0
+                # Find the file with the static definition.
+                # Negative lookahead (?!\() excludes function definitions like
+                # 'static void sym(...)' so we only match variable/key definitions.
+                local f
+                f=$(grep -rlP "^static\s.*\b${sym}\b(?!\()" "$KSU_DIR/" 2>/dev/null \
+                    | grep '\.c$' | grep -v ksu_stubs | head -1)
+                if [ -n "$f" ]; then
+                  echo "  [real] $sym → $(basename "$f")"
+                  sed -i \
+                    -e "s/^static DEFINE_STATIC_KEY_FALSE(${sym})/DEFINE_STATIC_KEY_FALSE(${sym})/" \
+                    -e "s/^static bool ${sym}/bool ${sym}/" \
+                    -e "s/^static struct page \*${sym}/struct page *${sym}/" \
+                    -e "s/^static void ${sym}(/void ${sym}(/" \
+                    "$f"
+                  grep -q "EXPORT_SYMBOL_GPL(${sym})" "$f" || \
+                    printf '\nEXPORT_SYMBOL_GPL(%s);\n' "${sym}" >> "$f"
+                  # Ensure the file is compiled in-tree.
+                  # If ksu.c already #includes the file the symbol is already
+                  # compiled as part of ksu.o — no Kbuild change needed.
+                  local fname fdir obj kb pkb subdir
+                  fname="$(basename "$f")"
+                  fdir="$(dirname "$f")"
+                  obj="${fname%.c}.o"
+                  if ! grep -qE "#include[[:space:]]*[\"<][^\"<>]*${fname}[>\"']" \
+                       "$KSU_DIR/ksu.c" 2>/dev/null; then
+                    kb="$fdir/Kbuild"
+                    [ -f "$kb" ] || kb="$fdir/Makefile"
+                    if [ -f "$kb" ]; then
+                      grep -q "$obj" "$kb" 2>/dev/null || echo "obj-\$(CONFIG_KSU) += $obj" >> "$kb"
+                    else
+                      echo "obj-\$(CONFIG_KSU) += $obj" > "$kb"
+                    fi
+                    if [ "$fdir" != "$KSU_DIR" ]; then
+                      subdir="$(basename "$fdir")"
+                      pkb="$KSU_DIR/Kbuild"
+                      [ -f "$pkb" ] || pkb="$KSU_DIR/Makefile"
+                      case "$_DONE_DIRS" in *" $subdir "*);;
+                        *)
+                          grep -q "obj-.*${subdir}/" "$pkb" 2>/dev/null || \
+                            printf 'ifndef KBUILD_EXTMOD\nobj-$(CONFIG_KSU) += %s/\nendif\n' \
+                              "$subdir" >> "$pkb"
+                          _DONE_DIRS="$_DONE_DIRS$subdir ";;
+                      esac
+                    fi
+                  fi
+                else
+                  echo "  [stub] $sym not found in source"
+                  _STUB_SYMS="$_STUB_SYMS $sym"
+                fi
+              }
+
+              # v4.x SukiSU-Ultra + SUSFS v2.1.0+ symbols
+              expose_ksu_sym ksu_selinux_hide_running
+              expose_ksu_sym fake_state
+              expose_ksu_sym ksu_is_init_rc_hook_enabled
+              expose_ksu_sym ksu_init_rc_hook_key_false
+              expose_ksu_sym ksu_is_input_hook_enabled
+              expose_ksu_sym ksu_input_hook_key_false
+              # v3.x SukiSU-Ultra symbols (backward compat)
+              expose_ksu_sym ksu_selinux_hide_enabled
+              expose_ksu_sym fake_status_initialize_key
+              expose_ksu_sym fake_status
+              expose_ksu_sym initialize_fake_status
+
+              if [ -n "$_STUB_SYMS" ]; then
+                SF="$KSU_DIR/ksu_stubs.c"
+                printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n' > "$SF"
+                for s in $_STUB_SYMS; do
+                  case "$s" in
+                    ksu_selinux_hide_running|ksu_selinux_hide_enabled)
+                      printf 'bool %s = false;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                    fake_state|fake_status)
+                      printf 'struct page *%s;\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                    initialize_fake_status)
+                      printf 'void %s(void) {}\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                    *)
+                      printf 'DEFINE_STATIC_KEY_FALSE(%s);\nEXPORT_SYMBOL_GPL(%s);\n' "$s" "$s" >> "$SF";;
+                  esac
+                done
+                KB="$KSU_DIR/Kbuild"
+                [ -f "$KB" ] || KB="$KSU_DIR/Makefile"
+                echo 'obj-$(CONFIG_KSU) += ksu_stubs.o' >> "$KB"
               fi
-              FEAT_BUILD="$KSU_DIR/feature/Kbuild"
-              [ -f "$FEAT_BUILD" ] || FEAT_BUILD="$KSU_DIR/feature/Makefile"
-              if [ ! -f "$FEAT_BUILD" ]; then
-                printf 'obj-$(CONFIG_KSU) += selinux_hide.o\n' > "$KSU_DIR/feature/Makefile"
-              elif ! grep -q "selinux_hide" "$FEAT_BUILD"; then
-                printf 'obj-$(CONFIG_KSU) += selinux_hide.o\n' >> "$FEAT_BUILD"
-              fi
-              echo "Done."
-            elif [ -d "$KSU_DIR" ] && ! grep -rq "ksu_selinux_hide_enabled\|ksu_selinux_hide_running\|ksu_init_rc_hook_key_false" "$KSU_DIR/" 2>/dev/null; then
-              echo "selinux_hide.c not found; injecting stubs for v3.x and v4.x API..."
-              printf '#include <linux/kernel.h>\n#include <linux/types.h>\n#include <linux/jump_label.h>\n#include <linux/mm_types.h>\n#include <linux/export.h>\n\nbool ksu_selinux_hide_enabled = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_enabled);\nDEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);\nEXPORT_SYMBOL_GPL(fake_status_initialize_key);\nstruct page *fake_status;\nEXPORT_SYMBOL_GPL(fake_status);\nvoid initialize_fake_status(void) {}\nEXPORT_SYMBOL_GPL(initialize_fake_status);\nbool ksu_selinux_hide_running = false;\nEXPORT_SYMBOL_GPL(ksu_selinux_hide_running);\nstruct page *fake_state;\nEXPORT_SYMBOL_GPL(fake_state);\nDEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);\nEXPORT_SYMBOL_GPL(ksu_is_init_rc_hook_enabled);\nDEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);\nEXPORT_SYMBOL_GPL(ksu_is_input_hook_enabled);\nDEFINE_STATIC_KEY_FALSE(ksu_init_rc_hook_key_false);\nEXPORT_SYMBOL_GPL(ksu_init_rc_hook_key_false);\nDEFINE_STATIC_KEY_FALSE(ksu_input_hook_key_false);\nEXPORT_SYMBOL_GPL(ksu_input_hook_key_false);\n' > "$KSU_DIR/selinux_fake_status.c"
-              KBUILD_FILE="$KSU_DIR/Kbuild"
-              [ -f "$KBUILD_FILE" ] || KBUILD_FILE="$KSU_DIR/Makefile"
-              echo 'obj-$(CONFIG_KSU) += selinux_fake_status.o' >> "$KBUILD_FILE"
               echo "Done."
             fi
           fi
