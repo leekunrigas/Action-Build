@@ -558,6 +558,7 @@ jobs:
             echo "❎ 未找到 build.config.msm.common，可能是天玑清单或纯 Kleaf 构建结构"
           fi
 
+          # 移除 ABI 保护
           for dir in kernel_platform/common kernel_platform/$KERNEL_REPOS; do
             if [ -e "$dir/BUILD.bazel" ]; then
               sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' "$dir/BUILD.bazel"
@@ -565,6 +566,10 @@ jobs:
             rm -f "$dir/android/abi_gki_protected_exports_"* 2>/dev/null || echo "No protected exports in $dir"
           done
 
+          # 移除构建审查
+          if grep -q 'check_defconfig' kernel_platform/common/build.config.gki; then
+            sed -i 's/check_defconfig//' kernel_platform/common/build.config.gki
+          fi
           if grep -q 'check_defconfig = None,' kernel_platform/build/kernel/kleaf/common_kernels.bzl; then
             sed -i 's/check_defconfig = None,/check_defconfig = "disabled",/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
             sed -i 's/if check_defconfig == None:/if False:  # check_defconfig == None:/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
@@ -821,16 +826,6 @@ jobs:
           echo "::group::最终 Makefile 中版本信息及部分调试结果预览"
           grep -nE '^(REPO_OWNER|REPO_NAME|REPO_BRANCH|KSU_VERSION_API|KSU_VERSION_FULL|VERSION_TAG|GIT_BIN|CURL_BIN)' kernel/Makefile
           echo "::endgroup::"
-
-          cd ../common
-          SULOG_EVENT="./drivers/kernelsu/sulog/event.c"
-          [ ! -f "$SULOG_EVENT" ] && { echo "未找到 $SULOG_EVENT，跳过 sulog 参数类型修复"; exit 0; }
-          if grep -q 'struct user_arg_ptr \*argv_user' "$SULOG_EVENT" && grep -q ', USER_ARG_NULL, gfp)' "$SULOG_EVENT"; then
-            sed -i 's|, USER_ARG_NULL, gfp)|, \&USER_ARG_NULL, gfp)|g' "$SULOG_EVENT"
-            echo "已修复 SukiSU SUSFS sulog USER_ARG_NULL 参数类型"
-          else
-            echo "SukiSU SUSFS sulog 参数类型无需修复"
-          fi
 
       - name: Apply Patches SukiSU Ultra
         env:
@@ -1304,14 +1299,11 @@ jobs:
             set_config "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
           fi
 
-          # 构建优化
+          # 构建依赖项调整及优化
           if [[ "$ENABLE_RUST" == "true" ]]; then
             set_config "CONFIG_RUST=y"
             set_config "CONFIG_ANDROID_BINDER_IPC_RUST=m"
           fi
-
-          # 移除构建审查
-          sed -i 's/check_defconfig//' ./build.config.gki
 
       - name: Fix IPv6_NAT Error
         if: ${{ github.event.inputs.NETFILTER == 'true' }}
