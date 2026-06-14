@@ -175,7 +175,7 @@ on:
         default: false
       PERF_TURBO:
         type: boolean
-        description: "Enable extra performance tweaks (PSI + BFQ I/O scheduler)?"
+        description: "PERF_TURBO by rigasleekun: enable extra performance tweaks (PSI + BFQ I/O scheduler + BBR TCP)?"
         required: true
         default: false
       SUSFS_DEV:
@@ -1441,6 +1441,11 @@ jobs:
             set_config "CONFIG_DEFAULT_DEADLINE=n"
             set_config "CONFIG_DEFAULT_KYBER=n"
             set_config "CONFIG_DEFAULT_NONE=n"
+            # BBR TCP congestion control: better throughput/latency on real-world (cellular/Wi-Fi) networks
+            set_config "CONFIG_TCP_CONG_BBR=y"
+            set_config "CONFIG_NET_SCH_FQ=y"
+            set_config "CONFIG_DEFAULT_BBR=y"
+            set_config "CONFIG_DEFAULT_CUBIC=n"
           fi
 
           # ZRAM configuration*
