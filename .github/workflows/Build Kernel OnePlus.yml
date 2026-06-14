@@ -175,7 +175,7 @@ on:
         default: false
       PERF_TURBO:
         type: boolean
-        description: "Enable extra performance tweaks (Multi-Gen LRU + PSI + BFQ I/O scheduler)?"
+        description: "Enable extra performance tweaks (PSI + BFQ I/O scheduler)?"
         required: true
         default: false
       SUSFS_DEV:
@@ -1433,9 +1433,6 @@ jobs:
 
           # PERF_TURBO configuration*
           if [ "${{ github.event.inputs.PERF_TURBO }}" = "true" ]; then
-            # Multi-Gen LRU (MGLRU): improves memory reclaim, reduces app-switching jank
-            set_config "CONFIG_LRU_GEN=y"
-            set_config "CONFIG_LRU_GEN_ENABLED=y"
             # PSI: gives LMKD more accurate memory pressure data, optimizing background app reclaim
             set_config "CONFIG_PSI=y"
             # BFQ I/O scheduler: improves UI responsiveness under storage I/O pressure
