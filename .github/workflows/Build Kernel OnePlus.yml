@@ -178,11 +178,6 @@ on:
         description: "PERF_TURBO by rigasleekun: enable extra performance tweaks (PSI + BFQ I/O scheduler + BBR TCP)?"
         required: true
         default: false
-      MONITOR_MODE:
-        type: boolean
-        description: "WLAN monitor mode by rigasleekun: enable WiFi monitor interface + frame capture/injection patch (oneplus_open_b / WCN7850 only)?"
-        required: true
-        default: false
       SUSFS_DEV:
         type: boolean
         description: "Pull the SUSFS-DEV branch?"
@@ -201,7 +196,7 @@ on:
 
 jobs:
   build:
-    name: ${{ github.event.inputs.FAST_BUILD == 'true' && ' [FAST]' || '' }}${{ contains(github.event.inputs.FILE, '_aosp') && ' [AOSP]' || '' }}${{ github.event.inputs.KPM == 'KPM' && ' [KPM]' || github.event.inputs.KPM == 'KPN' && ' [KPN]' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && ' [BBG]' || '' }}${{ github.event.inputs.SCHED_HMBIRD == 'true' && ' [HMBIRD]' || '' }}${{ github.event.inputs.DROID_SPACES == 'true' && ' [DS]' || '' }}${{ startsWith(github.event.inputs.ZRAM, '1/') && ' [ZRAM]' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && ' [REKER]' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && ' [LZ4UPD]' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && ' [TURBO]' || '' }}${{ github.event.inputs.MONITOR_MODE == 'true' && ' [WIFIMON]' || '' }}For ${{ github.event.inputs.FILE }} ${{ github.event.inputs.SUFFIX }}
+    name: ${{ github.event.inputs.FAST_BUILD == 'true' && ' [FAST]' || '' }}${{ contains(github.event.inputs.FILE, '_aosp') && ' [AOSP]' || '' }}${{ github.event.inputs.KPM == 'KPM' && ' [KPM]' || github.event.inputs.KPM == 'KPN' && ' [KPN]' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && ' [BBG]' || '' }}${{ github.event.inputs.SCHED_HMBIRD == 'true' && ' [HMBIRD]' || '' }}${{ github.event.inputs.DROID_SPACES == 'true' && ' [DS]' || '' }}${{ startsWith(github.event.inputs.ZRAM, '1/') && ' [ZRAM]' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && ' [REKER]' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && ' [LZ4UPD]' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && ' [TURBO]' || '' }}For ${{ github.event.inputs.FILE }} ${{ github.event.inputs.SUFFIX }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "none"
@@ -362,7 +357,6 @@ jobs:
           echo "Selected DROID_SPACES: ${{ github.event.inputs.DROID_SPACES }}"
           echo "Selected RE_KERNEL: ${{ github.event.inputs.RE_KERNEL }}"
           echo "Selected PERF_TURBO: ${{ github.event.inputs.PERF_TURBO }}"
-          echo "Selected MONITOR_MODE: ${{ github.event.inputs.MONITOR_MODE }}"
           echo "Selected LZ4_UPDATE: ${{ github.event.inputs.LZ4_UPDATE }}"
 
           BUILD_TIME="${{ github.event.inputs.BUILD_TIME }}"
@@ -581,71 +575,6 @@ jobs:
             sed -i 's/check_defconfig = None,/check_defconfig = "disabled",/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
             sed -i 's/if check_defconfig == None:/if False:  # check_defconfig == None:/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
           fi
-
-      - name: Apply MONITOR_MODE
-        if: ${{ github.event.inputs.MONITOR_MODE == 'true' }}
-        env:
-          FILE: ${{ github.event.inputs.FILE }}
-        run: |
-          cd kernel_workspace
-          if [ "$FILE" != "oneplus_open_b" ]; then
-            echo "::warning title=MONITOR_MODE Unsupported::MONITOR_MODE by rigasleekun is currently only supported for oneplus_open_b (WCN7850/kiwi_v2); skipping for $FILE."
-            exit 0
-          fi
-
-          WLAN_DIR="vendor/qcom/opensource/wlan"
-          WMI_FILE="${WLAN_DIR}/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c"
-
-          if [[ ! -f "$WMI_FILE" ]]; then
-            echo "::warning title=MONITOR_MODE Source Missing::qca-wifi-host-cmn source not found in this manifest, skipping MONITOR_MODE patch."
-            exit 0
-          fi
-
-          # Note: kiwi_v2 (WCN7850) already ships with CONFIG_WIFI_MONITOR_SUPPORT,
-          # CONFIG_QCA_MONITOR_PKT_SUPPORT and CONFIG_FEATURE_MONITOR_MODE_SUPPORT
-          # enabled by default (via default_defconfig's BERYLLIUM path), so the
-          # monitor-mode RX/TX code is already compiled in. The only thing gating
-          # it at runtime is the WMI service-bitmap check patched below.
-          echo "Patching WMI service-bitmap gate so packet capture/injection isn't blocked by the FW-advertised service bitmap..."
-          perl -i -0pe 's/(static bool is_service_enabled_tlv\(wmi_unified_t wmi_handle,[^\)]*\)\s*\{\s*struct wmi_soc \*soc = wmi_handle->soc;\n)/$1\n\t\/* MONITOR_MODE by rigasleekun: bypass FW service-bitmap gate for packet capture *\/\n\tif (service_id == WMI_SERVICE_PACKET_CAPTURE_SUPPORT)\n\t\treturn true;\n/' "$WMI_FILE"
-
-          if ! grep -q "MONITOR_MODE by rigasleekun: bypass FW service-bitmap gate" "$WMI_FILE"; then
-            echo "::error title=MONITOR_MODE Patch Failed::Failed to patch is_service_enabled_tlv() in wmi_unified_tlv.c"
-            exit 1
-          fi
-          echo "MONITOR_MODE patches applied successfully"
-
-          # --- Monitor-mode TX/injection -------------------------------
-          # The FullMAC firmware has no raw 802.11 data/control frame
-          # injection path, so the monitor netdev only gains an
-          # ndo_start_xmit handler that accepts management frames
-          # (radiotap header + 802.11 frame, as produced by e.g.
-          # scapy/aireplay-ng) and forwards them as-is via the existing
-          # mgmt-tx path of an active STA/SAP vdev. Data/control frames
-          # written to the monitor netdev are dropped.
-          HDD_MAIN_FILE="${WLAN_DIR}/qcacld-3.0/core/hdd/src/wlan_hdd_main.c"
-
-          if [[ ! -f "$HDD_MAIN_FILE" ]]; then
-            echo "::warning title=MONITOR_MODE TX Source Missing::wlan_hdd_main.c not found in this manifest, skipping monitor TX/injection patch."
-            exit 0
-          fi
-
-          echo "Adding radiotap header include..."
-          perl -i -pe 's/^(#include <net\/cfg80211.h>)$/$1\n#include <net\/ieee80211_radiotap.h>/' "$HDD_MAIN_FILE"
-
-          echo "Adding hdd_mon_start_xmit() injection handler..."
-          perl -i -pe 's/^(static const struct net_device_ops wlan_mon_drv_ops = \{)$/\/*\n * hdd_mon_start_xmit() - MONITOR_MODE by rigasleekun: injects raw IEEE\n * 802.11 management frames (radiotap header plus frame) written to the\n * monitor netdev via the mgmt-tx path of an existing STA or SAP vdev.\n * The FullMAC firmware has no raw data or control frame injection path,\n * so non-management frames are dropped.\n *\/\nstatic netdev_tx_t hdd_mon_start_xmit(struct sk_buff *skb,\n\t\tstruct net_device *dev)\n{\n\tstruct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);\n\tstruct hdd_context *hdd_ctx = WLAN_HDD_GET_CTX(adapter);\n\tstruct hdd_adapter *tx_adapter;\n\tstruct ieee80211_radiotap_header *rthdr;\n\tuint8_t *frm;\n\tuint32_t frm_len;\n\tuint16_t rt_len;\n\n\tif (wlan_hdd_validate_context(hdd_ctx))\n\t\tgoto drop;\n\n\tif (skb_linearize(skb))\n\t\tgoto drop;\n\n\tif (skb->len < sizeof(*rthdr))\n\t\tgoto drop;\n\n\trthdr = (struct ieee80211_radiotap_header *)skb->data;\n\trt_len = le16_to_cpu(rthdr->it_len);\n\tif (rt_len < sizeof(*rthdr) || skb->len <= rt_len)\n\t\tgoto drop;\n\n\tfrm = skb->data + rt_len;\n\tfrm_len = skb->len - rt_len;\n\n\t\/* Only management frames can be injected via the mgmt-tx path. *\/\n\tif (frm_len < 24 || ((frm[0] >> 2) & 0x3) != 0)\n\t\tgoto drop;\n\n\ttx_adapter = hdd_get_adapter(hdd_ctx, QDF_STA_MODE);\n\tif (!tx_adapter)\n\t\ttx_adapter = hdd_get_adapter(hdd_ctx, QDF_SAP_MODE);\n\tif (!tx_adapter)\n\t\tgoto drop;\n\n\tif (!QDF_IS_STATUS_SUCCESS(sme_send_mgmt_tx(hdd_ctx->mac_handle,\n\t\t\ttx_adapter->vdev_id, frm, frm_len)))\n\t\tgoto drop;\n\n\tdev->stats.tx_packets++;\n\tdev->stats.tx_bytes += skb->len;\n\tdev_kfree_skb_any(skb);\n\treturn NETDEV_TX_OK;\n\ndrop:\n\tdev->stats.tx_dropped++;\n\tdev_kfree_skb_any(skb);\n\treturn NETDEV_TX_OK;\n}\n\n$1/' "$HDD_MAIN_FILE"
-
-          echo "Wiring ndo_start_xmit into wlan_mon_drv_ops..."
-          perl -i -pe 's/^(\t\.ndo_open = hdd_mon_open,)$/$1\n\t.ndo_start_xmit = hdd_mon_start_xmit,/' "$HDD_MAIN_FILE"
-
-          if ! grep -q "ieee80211_radiotap.h" "$HDD_MAIN_FILE" || \
-             ! grep -q "hdd_mon_start_xmit" "$HDD_MAIN_FILE" || \
-             ! grep -q "ndo_start_xmit = hdd_mon_start_xmit" "$HDD_MAIN_FILE"; then
-            echo "::error title=MONITOR_MODE TX Patch Failed::Failed to patch wlan_hdd_main.c for monitor TX/injection support"
-            exit 1
-          fi
-          echo "MONITOR_MODE TX/injection patch applied successfully"
 
       - name: Kernel Version Handling
         run: |
@@ -1966,7 +1895,7 @@ jobs:
       - name: Set zip Suffix
         id: suffix
         run: |
-          echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && '_TURBO' || '' }}${{ github.event.inputs.MONITOR_MODE == 'true' && '_WIFIMON' || '' }}" >> $GITHUB_OUTPUT
+          echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && '_TURBO' || '' }}" >> $GITHUB_OUTPUT
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
