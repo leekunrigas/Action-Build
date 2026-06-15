@@ -178,6 +178,11 @@ on:
         description: "PERF_TURBO by rigasleekun: enable extra performance tweaks (PSI + BFQ I/O scheduler + BBR TCP)?"
         required: true
         default: false
+      MONITOR_MODE:
+        type: boolean
+        description: "WLAN monitor mode by rigasleekun: enable WiFi monitor interface + frame capture/injection patch (oneplus_open_b / WCN7850 only)?"
+        required: true
+        default: false
       SUSFS_DEV:
         type: boolean
         description: "Pull the SUSFS-DEV branch?"
@@ -196,7 +201,7 @@ on:
 
 jobs:
   build:
-    name: ${{ github.event.inputs.FAST_BUILD == 'true' && ' [FAST]' || '' }}${{ contains(github.event.inputs.FILE, '_aosp') && ' [AOSP]' || '' }}${{ github.event.inputs.KPM == 'KPM' && ' [KPM]' || github.event.inputs.KPM == 'KPN' && ' [KPN]' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && ' [BBG]' || '' }}${{ github.event.inputs.SCHED_HMBIRD == 'true' && ' [HMBIRD]' || '' }}${{ github.event.inputs.DROID_SPACES == 'true' && ' [DS]' || '' }}${{ startsWith(github.event.inputs.ZRAM, '1/') && ' [ZRAM]' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && ' [REKER]' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && ' [LZ4UPD]' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && ' [TURBO]' || '' }}For ${{ github.event.inputs.FILE }} ${{ github.event.inputs.SUFFIX }}
+    name: ${{ github.event.inputs.FAST_BUILD == 'true' && ' [FAST]' || '' }}${{ contains(github.event.inputs.FILE, '_aosp') && ' [AOSP]' || '' }}${{ github.event.inputs.KPM == 'KPM' && ' [KPM]' || github.event.inputs.KPM == 'KPN' && ' [KPN]' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && ' [BBG]' || '' }}${{ github.event.inputs.SCHED_HMBIRD == 'true' && ' [HMBIRD]' || '' }}${{ github.event.inputs.DROID_SPACES == 'true' && ' [DS]' || '' }}${{ startsWith(github.event.inputs.ZRAM, '1/') && ' [ZRAM]' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && ' [REKER]' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && ' [LZ4UPD]' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && ' [TURBO]' || '' }}${{ github.event.inputs.MONITOR_MODE == 'true' && ' [WIFIMON]' || '' }}For ${{ github.event.inputs.FILE }} ${{ github.event.inputs.SUFFIX }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "none"
@@ -357,6 +362,7 @@ jobs:
           echo "Selected DROID_SPACES: ${{ github.event.inputs.DROID_SPACES }}"
           echo "Selected RE_KERNEL: ${{ github.event.inputs.RE_KERNEL }}"
           echo "Selected PERF_TURBO: ${{ github.event.inputs.PERF_TURBO }}"
+          echo "Selected MONITOR_MODE: ${{ github.event.inputs.MONITOR_MODE }}"
           echo "Selected LZ4_UPDATE: ${{ github.event.inputs.LZ4_UPDATE }}"
 
           BUILD_TIME="${{ github.event.inputs.BUILD_TIME }}"
@@ -575,6 +581,44 @@ jobs:
             sed -i 's/check_defconfig = None,/check_defconfig = "disabled",/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
             sed -i 's/if check_defconfig == None:/if False:  # check_defconfig == None:/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
           fi
+
+      - name: Apply MONITOR_MODE
+        if: ${{ github.event.inputs.MONITOR_MODE == 'true' }}
+        env:
+          FILE: ${{ github.event.inputs.FILE }}
+        run: |
+          cd kernel_workspace
+          if [ "$FILE" != "oneplus_open_b" ]; then
+            echo "::warning title=MONITOR_MODE Unsupported::MONITOR_MODE by rigasleekun is currently only supported for oneplus_open_b (WCN7850/kiwi_v2); skipping for $FILE."
+            exit 0
+          fi
+
+          WLAN_DIR="vendor/qcom/opensource/wlan"
+          DEFCONFIG="${WLAN_DIR}/qcacld-3.0/configs/kiwi_v2_defconfig"
+          WMI_FILE="${WLAN_DIR}/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c"
+
+          if [[ ! -f "$DEFCONFIG" || ! -f "$WMI_FILE" ]]; then
+            echo "::warning title=MONITOR_MODE Source Missing::qcacld-3.0/qca-wifi-host-cmn source not found in this manifest, skipping MONITOR_MODE patch."
+            exit 0
+          fi
+
+          echo "Forcing on WLAN monitor-interface + RX packet capture config for kiwi_v2..."
+          cat >> "$DEFCONFIG" << 'EOF'
+
+          # --- MONITOR_MODE by rigasleekun: force-enable WiFi monitor interface + RX packet capture ---
+          CONFIG_WIFI_MONITOR_SUPPORT := y
+          CONFIG_QCA_MONITOR_PKT_SUPPORT := y
+          CONFIG_FEATURE_MONITOR_MODE_SUPPORT := y
+          EOF
+
+          echo "Patching WMI service-bitmap gate so packet capture/injection isn't blocked by the FW-advertised service bitmap..."
+          perl -i -0pe 's/(static bool is_service_enabled_tlv\(wmi_unified_t wmi_handle,[^\)]*\)\s*\{\s*struct wmi_soc \*soc = wmi_handle->soc;\n)/$1\n\t\/* MONITOR_MODE by rigasleekun: bypass FW service-bitmap gate for packet capture *\/\n\tif (service_id == WMI_SERVICE_PACKET_CAPTURE_SUPPORT)\n\t\treturn true;\n/' "$WMI_FILE"
+
+          if ! grep -q "MONITOR_MODE by rigasleekun: bypass FW service-bitmap gate" "$WMI_FILE"; then
+            echo "::error title=MONITOR_MODE Patch Failed::Failed to patch is_service_enabled_tlv() in wmi_unified_tlv.c"
+            exit 1
+          fi
+          echo "MONITOR_MODE patches applied successfully"
 
       - name: Kernel Version Handling
         run: |
@@ -1895,7 +1939,7 @@ jobs:
       - name: Set zip Suffix
         id: suffix
         run: |
-          echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && '_TURBO' || '' }}" >> $GITHUB_OUTPUT
+          echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}${{ github.event.inputs.PERF_TURBO == 'true' && '_TURBO' || '' }}${{ github.event.inputs.MONITOR_MODE == 'true' && '_WIFIMON' || '' }}" >> $GITHUB_OUTPUT
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
