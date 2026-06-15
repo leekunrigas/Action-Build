@@ -594,23 +594,18 @@ jobs:
           fi
 
           WLAN_DIR="vendor/qcom/opensource/wlan"
-          DEFCONFIG="${WLAN_DIR}/qcacld-3.0/configs/kiwi_v2_defconfig"
           WMI_FILE="${WLAN_DIR}/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c"
 
-          if [[ ! -f "$DEFCONFIG" || ! -f "$WMI_FILE" ]]; then
-            echo "::warning title=MONITOR_MODE Source Missing::qcacld-3.0/qca-wifi-host-cmn source not found in this manifest, skipping MONITOR_MODE patch."
+          if [[ ! -f "$WMI_FILE" ]]; then
+            echo "::warning title=MONITOR_MODE Source Missing::qca-wifi-host-cmn source not found in this manifest, skipping MONITOR_MODE patch."
             exit 0
           fi
 
-          echo "Forcing on WLAN monitor-interface + RX packet capture config for kiwi_v2..."
-          cat >> "$DEFCONFIG" << 'EOF'
-
-          # --- MONITOR_MODE by rigasleekun: force-enable WiFi monitor interface + RX packet capture ---
-          CONFIG_WIFI_MONITOR_SUPPORT := y
-          CONFIG_QCA_MONITOR_PKT_SUPPORT := y
-          CONFIG_FEATURE_MONITOR_MODE_SUPPORT := y
-          EOF
-
+          # Note: kiwi_v2 (WCN7850) already ships with CONFIG_WIFI_MONITOR_SUPPORT,
+          # CONFIG_QCA_MONITOR_PKT_SUPPORT and CONFIG_FEATURE_MONITOR_MODE_SUPPORT
+          # enabled by default (via default_defconfig's BERYLLIUM path), so the
+          # monitor-mode RX/TX code is already compiled in. The only thing gating
+          # it at runtime is the WMI service-bitmap check patched below.
           echo "Patching WMI service-bitmap gate so packet capture/injection isn't blocked by the FW-advertised service bitmap..."
           perl -i -0pe 's/(static bool is_service_enabled_tlv\(wmi_unified_t wmi_handle,[^\)]*\)\s*\{\s*struct wmi_soc \*soc = wmi_handle->soc;\n)/$1\n\t\/* MONITOR_MODE by rigasleekun: bypass FW service-bitmap gate for packet capture *\/\n\tif (service_id == WMI_SERVICE_PACKET_CAPTURE_SUPPORT)\n\t\treturn true;\n/' "$WMI_FILE"
 
